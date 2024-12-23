@@ -1,0 +1,26 @@
+{
+  "name": "sophon-delegators-cache",
+  "version": "1.0.0",
+  "description": "",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hardx4/sophon-delegators-cache.git"
+  },
+  "keywords": [
+    "sophon"
+  ],
+  "author": "hardx4",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/hardx4/sophon-delegators-cache/issues"
+  },
+  "homepage": "https://github.com/hardx4/sophon-delegators-cache#readme",
+  "dependencies": {
+    "axios": "^1.7.9",
+    "mongodb": "^6.12.0"
+  }
+}
