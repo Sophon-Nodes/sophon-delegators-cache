@@ -126,7 +126,7 @@ async function updateOperators() {
         console.error('Error connecting or operating on MongoDB:', error.message);
     } finally {
 		console.log(`${upCounter} Updated and ${newCounter} New Inserteds`);
-		setInterval(updateOperators, 1800000); //every 15 minutes
+		setTimeout(updateOperators, 1800000); //every 15 minutes
         await client.close();
     }
 }
