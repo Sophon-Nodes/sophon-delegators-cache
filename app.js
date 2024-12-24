@@ -36,15 +36,28 @@ function hexToInt(hex) {
 }
 
 // Function to query the API
-async function fetchOperators() {
-    try {
-        const response = await axios.get('https://monitor.sophon.xyz/nodes');
-		
+async function fetchOperators(page, limit) {
+    try {		
+		const response = await axios.get(`https://monitor.sophon.xyz/nodes?page=${i}&per_page=${limit}`);		
 		return response.data.nodes;
     } catch (error) {
         console.error(`Erro ao consultar a API para o operador ${operatorAddress}:`, error.message);
         return null;
     }
+}
+
+async function paginateOperators(page, limit){	
+	console.log('Updating operator indexes.');
+	let operators_index = [];
+	for(i=page;i<99999;i++){
+		let response = await fetchOperators(i, limit);
+		if(response.length > 0){
+			operators_index.push(...response);
+		}else{
+			break;
+		}
+	}
+	return operators_index;
 }
 
 // Function to query the API
@@ -98,7 +111,7 @@ async function updateOperators() {
 
         let idCounter = 0;
 		
-		OPERATORS = await fetchOperators();
+		OPERATORS = await paginateOperators(1,999);
 		let total = OPERATORS.length;
 		
 		console.log(`${OPERATORS.length} Operators known`);
@@ -116,11 +129,11 @@ async function updateOperators() {
 				continue;
 			} 
 
-            if (existingOperator && existingOperator.nodesDelegated != delegators) {
+            if (existingOperator && (existingOperator.nodeStatus != operator.status || existingOperator.nodeRewards != operator.rewards || existingOperator.nodeFee != operator.fee || existingOperator.nodeUptime != operator.uptime || existingOperator.nodesDelegated != delegators)) {
                 // Update existing document
                 await collection.updateOne(
                     { operatorAddress: operator.operator },
-                    { $set: { nodesDelegated: delegators } }
+                    { $set: { nodesDelegated: delegators, nodeStatus: operator.status, nodeRewards: operator.rewards, nodeFee: operator.fee, nodeUptime: operator.uptime } }
                 );
 				upCounter++;
                 console.log(`${idCounter}/${total} - Updated operator ${operator.operator} with ${delegators} delegators.`);
@@ -128,7 +141,11 @@ async function updateOperators() {
                 // Inserts a new document
                 await collection.insertOne({
                     operatorAddress: operator.operator,
-                    nodesDelegated: delegators,
+					nodesDelegated: delegators, 
+					nodeStatus: operator.status, 
+					nodeRewards: operator.rewards, 
+					nodeFee: operator.fee, 
+					nodeUptime: operator.uptime,
                 });
 				newCounter++;
                 console.log(`${idCounter}/${total} - New operator inserted ${operator.operator} with ${delegators} delegators.`);
@@ -137,8 +154,8 @@ async function updateOperators() {
 				console.log(`${idCounter}/${total} - Operator ignored ${operator.operator} with ${delegators} delegators.`);
 			}		
 			
-			operators_obj[operator.operator] = delegators;
-			delegators_temp.push(operators_obj);
+			//operators_obj[operator.operator] = delegators;
+			delegators_temp.push({"operator":operator.operator,"status":operator.status,"rewards":operator.rewards,"fee":operator.fee,"uptime":operator.uptime,"delegators":delegators});
 
             // delay between interactions
             await sleep(200);
@@ -148,7 +165,7 @@ async function updateOperators() {
     } finally {
 		console.log(`${upCounter} Updated, ${newCounter} New Inserteds and ${skipedCounter} Ignored`);
 		GLOBAL_DELEGATORS = delegators_temp;
-		 console.log('GLOBAL_DELEGATORS Updated!');
+		console.log('GLOBAL_DELEGATORS Updated!');
 		setTimeout(updateOperators, 1800000); //every 15 minutes
         await client.close();
     }
@@ -166,15 +183,12 @@ async function getAllOperators() {
         const db = client.db(dbName);
         const collection = db.collection(collectionName);
 
-        const operators = await collection.find({}).toArray();
-
-        // Atualiza GLOBAL_DELEGATORS no formato de chave-valor
-        GLOBAL_DELEGATORS = operators.reduce((acc, operator) => {
-            acc[operator.operatorAddress] = operator.nodesDelegated;
-            return acc;
-        }, {});
+        const operators_ = await collection.find({}, { projection: { _id: 0 } }).toArray();		
+		
+        GLOBAL_DELEGATORS = operators_;
 
         console.log('GLOBAL_DELEGATORS Initialized!');
+		
         return GLOBAL_DELEGATORS;
     } catch (error) {
         console.error('Error connecting or operating on MongoDB:', error.message);
@@ -198,5 +212,5 @@ app.listen(port, () => {
     console.log(`Server running on http://localhost:${port}`);
 });
 
-getAllOperators();
 setTimeout(updateOperators, 5000);
+getAllOperators();
