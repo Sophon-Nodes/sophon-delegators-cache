@@ -188,10 +188,9 @@ async function getAllOperators() {
 		
 		
 		
-        GLOBAL_DELEGATORS["nodes"] = operators_;
-		GLOBAL_DELEGATORS["lastupdate"] = Math.floor(Date.now() / 1000);
+        GLOBAL_DELEGATORS = {"nodes": operators_, lastupdate: Math.floor(Date.now() / 1000)};		
 
-        console.log('GLOBAL_DELEGATORS Initialized!', GLOBAL_DELEGATORS);
+        console.log('GLOBAL_DELEGATORS Initialized!');
 		
         return GLOBAL_DELEGATORS;
     } catch (error) {
