@@ -164,8 +164,7 @@ async function updateOperators() {
         console.error('Error connecting or operating on MongoDB:', error.message);
     } finally {
 		console.log(`${upCounter} Updated, ${newCounter} New Inserteds and ${skipedCounter} Ignored`);
-		GLOBAL_DELEGATORS["nodes"] = delegators_temp;
-		GLOBAL_DELEGATORS["lastupdate"] = Math.floor(Date.now() / 1000);
+		GLOBAL_DELEGATORS = {"nodes": delegators_temp, lastupdate: Math.floor(Date.now() / 1000)};
 		console.log('GLOBAL_DELEGATORS Updated!');
 		setTimeout(updateOperators, process.env.REFRESH_INTERVAL * 1000); 
         await client.close();
