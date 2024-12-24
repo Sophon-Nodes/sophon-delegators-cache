@@ -152,10 +152,7 @@ async function updateOperators() {
             }else{
 				skipedCounter++;
 				console.log(`${idCounter}/${total} - Operator ignored ${operator.operator} with ${delegators} delegators.`);
-			}		
-			
-			//operators_obj[operator.operator] = delegators;
-			delegators_temp.push({"operator":operator.operator,"status":operator.status,"rewards":operator.rewards,"fee":operator.fee,"uptime":operator.uptime,"delegators":delegators});
+			}
 
             // delay between interactions
             await sleep(200);
@@ -164,8 +161,7 @@ async function updateOperators() {
         console.error('Error connecting or operating on MongoDB:', error.message);
     } finally {
 		console.log(`${upCounter} Updated, ${newCounter} New Inserteds and ${skipedCounter} Ignored`);
-		GLOBAL_DELEGATORS = {"nodes": delegators_temp, lastupdate: Math.floor(Date.now() / 1000)};
-		console.log('GLOBAL_DELEGATORS Updated!');
+		getAllOperators();
 		setTimeout(updateOperators, process.env.REFRESH_INTERVAL * 1000); 
         await client.close();
     }
@@ -186,10 +182,10 @@ async function getAllOperators() {
         const operators_ = await collection.find({}, { projection: { _id: 0 } }).toArray();		
 		
 		
-		
+		GLOBAL_DELEGATORS = [];
         GLOBAL_DELEGATORS = {"nodes": operators_, lastupdate: Math.floor(Date.now() / 1000)};		
 
-        console.log('GLOBAL_DELEGATORS Initialized!');
+        console.log('GLOBAL_DELEGATORS Updated!');
 		
         return GLOBAL_DELEGATORS;
     } catch (error) {
