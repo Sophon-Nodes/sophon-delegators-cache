@@ -99,7 +99,10 @@ async function updateOperators() {
 
             // API Query
             const delegators = await fetchDelegators(operator.operator, idCounter++);
-            if (delegators === null) continue;
+            if (delegators === null){
+				console.log(`${idCounter}/${total} - RPC returns null for the operator: ${operator.operator}`);
+				continue;
+			} 
 
             if (existingOperator && existingOperator.nodesDelegated != delegators) {
                 // Update existing document
