@@ -1,6 +1,8 @@
 // Import the required modules
 require('dotenv').config();
 require('log-timestamp');
+const express = require('express');
+const cors = require('cors');
 const axios = require('axios');
 const { MongoClient } = require('mongodb');
 
@@ -9,9 +11,16 @@ const mongoUri = process.env.MONGO_URI;
 const dbName = process.env.DB_NAME;
 const collectionName = process.env.COLLECTION_NAME;
 
+// Express Settings
+const app = express();
+const port = process.env.SERVICE_PORT;
+
+// CORS settings
+app.use(cors({ origin: process.env.DOMAIN }));
 
 // Array of operators
 let OPERATORS = [];
+let GLOBAL_DELEGATORS = [];
 
 // Function to compose the "data" field of the request
 function composeData(operatorAddress) {
@@ -78,6 +87,7 @@ async function updateOperators() {
 	let upCounter = 0;
 	let newCounter = 0;
 	let skipedCounter = 0;
+	let delegators_temp = [];
 
     try {
         await client.connect();
@@ -96,6 +106,8 @@ async function updateOperators() {
         for (const operator of OPERATORS) {
             // Database query
             const existingOperator = await collection.findOne({ operatorAddress: operator.operator });
+			
+			let operators_obj = {};
 
             // API Query
             const delegators = await fetchDelegators(operator.operator, idCounter++);
@@ -123,7 +135,10 @@ async function updateOperators() {
             }else{
 				skipedCounter++;
 				console.log(`${idCounter}/${total} - Operator ignored ${operator.operator} with ${delegators} delegators.`);
-			}
+			}		
+			
+			operators_obj[operator.operator] = delegators;
+			delegators_temp.push(operators_obj);
 
             // delay between interactions
             await sleep(200);
@@ -132,15 +147,56 @@ async function updateOperators() {
         console.error('Error connecting or operating on MongoDB:', error.message);
     } finally {
 		console.log(`${upCounter} Updated, ${newCounter} New Inserteds and ${skipedCounter} Ignored`);
+		GLOBAL_DELEGATORS = delegators_temp;
+		 console.log('GLOBAL_DELEGATORS Updated!');
 		setTimeout(updateOperators, 1800000); //every 15 minutes
         await client.close();
     }
 }
 
-// Function to run periodically
-//setInterval(updateOperators, 60000); // Updates every 60 seconds
+async function getAllOperators() {
+	
+	console.log(`Bringing existing delegate records by operator.`);
+    const client = new MongoClient(mongoUri);
 
-// Run the function when starting the script
-updateOperators();
+    try {
+        await client.connect();
+        console.log('Connected to MongoDB');
 
-//fetchDelegators(OPERATORS[0],1);
+        const db = client.db(dbName);
+        const collection = db.collection(collectionName);
+
+        const operators = await collection.find({}).toArray();
+
+        // Atualiza GLOBAL_DELEGATORS no formato de chave-valor
+        GLOBAL_DELEGATORS = operators.reduce((acc, operator) => {
+            acc[operator.operatorAddress] = operator.nodesDelegated;
+            return acc;
+        }, {});
+
+        console.log('GLOBAL_DELEGATORS Initialized!');
+        return GLOBAL_DELEGATORS;
+    } catch (error) {
+        console.error('Error connecting or operating on MongoDB:', error.message);
+        return {};
+    } finally {
+        await client.close();
+    }
+}
+
+// Route to get list of operators
+app.get('/operators', async (req, res) => {
+    try {
+        res.json(GLOBAL_DELEGATORS);
+    } catch (error) {
+        res.status(500).json({ error: 'Error getting operators...' });
+    }
+});
+
+// Start the server
+app.listen(port, () => {
+    console.log(`Server running on http://localhost:${port}`);
+});
+
+getAllOperators();
+setTimeout(updateOperators, 5000);
