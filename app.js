@@ -164,9 +164,10 @@ async function updateOperators() {
         console.error('Error connecting or operating on MongoDB:', error.message);
     } finally {
 		console.log(`${upCounter} Updated, ${newCounter} New Inserteds and ${skipedCounter} Ignored`);
-		GLOBAL_DELEGATORS = delegators_temp;
+		GLOBAL_DELEGATORS["nodes"] = delegators_temp;
+		GLOBAL_DELEGATORS["lastupdate"] = Math.floor(Date.now() / 1000);
 		console.log('GLOBAL_DELEGATORS Updated!');
-		setTimeout(updateOperators, 1800000); //every 15 minutes
+		setTimeout(updateOperators, process.env.REFRESH_INTERVAL * 1000); 
         await client.close();
     }
 }
@@ -185,9 +186,12 @@ async function getAllOperators() {
 
         const operators_ = await collection.find({}, { projection: { _id: 0 } }).toArray();		
 		
-        GLOBAL_DELEGATORS = operators_;
+		
+		
+        GLOBAL_DELEGATORS["nodes"] = operators_;
+		GLOBAL_DELEGATORS["lastupdate"] = Math.floor(Date.now() / 1000);
 
-        console.log('GLOBAL_DELEGATORS Initialized!');
+        console.log('GLOBAL_DELEGATORS Initialized!', GLOBAL_DELEGATORS);
 		
         return GLOBAL_DELEGATORS;
     } catch (error) {
