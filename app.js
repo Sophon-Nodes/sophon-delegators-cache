@@ -9,9 +9,6 @@ const mongoUri = process.env.MONGO_URI;
 const dbName = process.env.DB_NAME;
 const collectionName = process.env.COLLECTION_NAME;
 
-let upCounter = 0;
-let newCounter = 0;
-
 
 // Array of operators
 let OPERATORS = [];
@@ -78,6 +75,9 @@ function sleep(ms) {
 // Main function to update or insert data in MongoDB
 async function updateOperators() {
     const client = new MongoClient(mongoUri);
+	let upCounter = 0;
+	let newCounter = 0;
+	let skipedCounter = 0;
 
     try {
         await client.connect();
@@ -101,7 +101,7 @@ async function updateOperators() {
             const delegators = await fetchDelegators(operator.operator, idCounter++);
             if (delegators === null) continue;
 
-            if (existingOperator) {
+            if (existingOperator && existingOperator.nodesDelegated != delegators) {
                 // Update existing document
                 await collection.updateOne(
                     { operatorAddress: operator.operator },
@@ -109,7 +109,7 @@ async function updateOperators() {
                 );
 				upCounter++;
                 console.log(`${idCounter}/${total} - Updated operator ${operator.operator} with ${delegators} delegators.`);
-            } else {
+            } else if (!existingOperator) {
                 // Inserts a new document
                 await collection.insertOne({
                     operatorAddress: operator.operator,
@@ -117,7 +117,10 @@ async function updateOperators() {
                 });
 				newCounter++;
                 console.log(`${idCounter}/${total} - New operator inserted ${operator.operator} with ${delegators} delegators.`);
-            }
+            }else{
+				skipedCounter++;
+				console.log(`${idCounter}/${total} - Operator ignored ${operator.operator} with ${delegators} delegators.`);
+			}
 
             // delay between interactions
             await sleep(200);
@@ -125,7 +128,7 @@ async function updateOperators() {
     } catch (error) {
         console.error('Error connecting or operating on MongoDB:', error.message);
     } finally {
-		console.log(`${upCounter} Updated and ${newCounter} New Inserteds`);
+		console.log(`${upCounter} Updated, ${newCounter} New Inserteds and ${skipedCounter} Ignored`);
 		setTimeout(updateOperators, 1800000); //every 15 minutes
         await client.close();
     }
