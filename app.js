@@ -106,7 +106,7 @@ async function updateOperators() {
 	let delegators_temp = [];
 
     try {
-	await operationControlCheck("increment");
+	await operationControlCheck("init");
         await client.connect();
         console.log('Connected to MongoDB');
 
@@ -178,18 +178,15 @@ async function updateOperators() {
 }
 
 async function getAllOperators() {
-	await operationControlCheck("init");
 	console.log(`Bringing existing delegate records by operator.`);
     const client = new MongoClient(mongoUri);
 
     try {
-	await operationControlCheck("increment");
         await client.connect();
         console.log('Connected to MongoDB');
 
         const db = client.db(dbName);
         const collection = db.collection(collectionName);
-	await operationControlCheck("increment");
         const operators_ = await collection.find({}, { projection: { _id: 0 } }).toArray();		
 		
 		
