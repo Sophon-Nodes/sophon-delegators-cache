@@ -11,6 +11,9 @@ const mongoUri = process.env.MONGO_URI;
 const dbName = process.env.DB_NAME;
 const collectionName = process.env.COLLECTION_NAME;
 
+//For operations per second control, MongoDB Atlas plan limitation.
+let operations = {start: 0, currentOp: 0, during:{start:0,end:0}, limit: 80};
+
 // Express Settings
 const app = express();
 const port = process.env.SERVICE_PORT;
@@ -103,6 +106,7 @@ async function updateOperators() {
 	let delegators_temp = [];
 
     try {
+	await operationControlCheck("increment");
         await client.connect();
         console.log('Connected to MongoDB');
 
@@ -110,7 +114,7 @@ async function updateOperators() {
         const collection = db.collection(collectionName);
 
         let idCounter = 0;
-		
+		await operationControlCheck("increment");
 		OPERATORS = await paginateOperators(1,999);
 		let total = OPERATORS.length;
 		
@@ -118,11 +122,13 @@ async function updateOperators() {
 
         for (const operator of OPERATORS) {
             // Database query
+		await operationControlCheck("increment");
             const existingOperator = await collection.findOne({ operatorAddress: operator.operator });
 			
 			let operators_obj = {};
 
             // API Query
+		await operationControlCheck("increment");
             const delegators = await fetchDelegators(operator.operator, idCounter++);
             if (delegators === null){
 				console.log(`${idCounter}/${total} - RPC returns null for the operator: ${operator.operator}`);
@@ -131,6 +137,7 @@ async function updateOperators() {
 
             if (existingOperator && (existingOperator.nodeStatus != operator.status || existingOperator.nodeRewards != operator.rewards || existingOperator.nodeFee != operator.fee || existingOperator.nodeUptime != operator.uptime || existingOperator.nodesDelegated != delegators)) {
                 // Update existing document
+		    await operationControlCheck("increment");
                 await collection.updateOne(
                     { operatorAddress: operator.operator },
                     { $set: { nodesDelegated: delegators, nodeStatus: operator.status, nodeRewards: operator.rewards, nodeFee: operator.fee, nodeUptime: operator.uptime } }
@@ -139,6 +146,7 @@ async function updateOperators() {
                 console.log(`${idCounter}/${total} - Updated operator ${operator.operator} with ${delegators} delegators.`);
             } else if (!existingOperator) {
                 // Inserts a new document
+		    await operationControlCheck("increment");
                 await collection.insertOne({
                     operatorAddress: operator.operator,
 					nodesDelegated: delegators, 
@@ -155,12 +163,14 @@ async function updateOperators() {
 			}
 
             // delay between interactions
-            await sleep(200);
+		await operationControlCheck("check");
+            //await sleep(200);
         }
     } catch (error) {
         console.error('Error connecting or operating on MongoDB:', error.message);
     } finally {
 		console.log(`${upCounter} Updated, ${newCounter} New Inserteds and ${skipedCounter} Ignored`);
+	    	await operationControlCheck("finally");
 		getAllOperators();
 		setTimeout(updateOperators, process.env.REFRESH_INTERVAL * 1000); 
         await client.close();
@@ -168,17 +178,18 @@ async function updateOperators() {
 }
 
 async function getAllOperators() {
-	
+	await operationControlCheck("init");
 	console.log(`Bringing existing delegate records by operator.`);
     const client = new MongoClient(mongoUri);
 
     try {
+	await operationControlCheck("increment");
         await client.connect();
         console.log('Connected to MongoDB');
 
         const db = client.db(dbName);
         const collection = db.collection(collectionName);
-
+	await operationControlCheck("increment");
         const operators_ = await collection.find({}, { projection: { _id: 0 } }).toArray();		
 		
 		
@@ -194,6 +205,45 @@ async function getAllOperators() {
     } finally {
         await client.close();
     }
+}
+
+async function operationControlCheck(cases){
+	let timeNow = Math.floor(Date.now() / 1000);
+	switch (cases) {
+		case "init":
+			operations.during.start = Math.floor(Date.now() / 1000);
+			operations.during.end = 0;
+			operations.start = Math.floor(Date.now() / 1000);
+		break;
+		case "increment":
+			operations.currentOp++;			
+			if((timeNow - operations.start) <= 1 && operations.currentOp >= operations.limit){
+				console.log("Sleeping...");
+				operations.currentOp = 0;
+				await sleep(1000);
+				operations.start = Math.floor(Date.now() / 1000);
+			}else if((timeNow - operations.start) > 1 && operations.currentOp >= operations.limit){
+				operations.start = Math.floor(Date.now() / 1000);
+				operations.currentOp = 0;
+			}
+		break;
+		case "check":			
+			if((timeNow - operations.start) <= 1 && operations.currentOp >= operations.limit){
+				console.log("Sleeping...");
+				operations.currentOp = 0;
+				await sleep(1000);
+				operations.start = Math.floor(Date.now() / 1000);
+			}else if((timeNow - operations.start) > 1 && operations.currentOp >= operations.limit){
+				operations.start = Math.floor(Date.now() / 1000);
+				operations.currentOp = 0;
+			}
+		break;
+		case "finally":
+			operations.during.end = timeNow;
+			console.log(`Completed on: ${operations.during.end - operations.during.start}s`);
+		break;
+	}	
+	return ;
 }
 
 // Route to get list of operators
