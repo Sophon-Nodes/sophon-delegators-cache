@@ -9,10 +9,14 @@ const { MongoClient } = require('mongodb');
 // MongoDB Settings
 const mongoUri = process.env.MONGO_URI;
 const dbName = process.env.DB_NAME;
-const collectionName = process.env.COLLECTION_NAME;
+const collectionOperators = process.env.COLLECTION_OPERATORS;
+const collectionLogs = process.env.COLLECTION_LOGS;
+const collectionSystem = process.env.COLLECTION_SYSTEM;
 
 //For operations per second control, MongoDB Atlas plan limitation.
 let operations = {start: 0, currentOp: 0, during:{start:0,end:0}, limit: 80};
+
+let updateOperations = {newRecord: 0, updateRecord: 0, recordIgnored: 0, noAction: 0, recordErrors: 0};
 
 // Express Settings
 const app = express();
@@ -38,6 +42,18 @@ function hexToInt(hex) {
     return parseInt(hex, 16);
 }
 
+// Function to convert an integer value to a hexadecimal
+function intToHex(int) {
+    return '0x' + int.toString(16);
+}
+
+//Convert to Ethereum Address
+function toEthereumAddress(hexString) {
+    const strippedHex = hexString.startsWith('0x') ? hexString.slice(2) : hexString;
+    const address = strippedHex.slice(-40);
+    return '0x' + address;
+}
+
 // Function to query the API
 async function fetchOperators(page, limit) {
     try {		
@@ -54,8 +70,16 @@ async function paginateOperators(page, limit){
 	let operators_index = [];
 	for(i=page;i<99999;i++){
 		let response = await fetchOperators(i, limit);
+		
+		if (response === null){
+			console.error(`paginateOperators: Error during execution fetchOperators, loop terminated. `);
+			return null;
+		}
+		
+		await operationControlCheck("increment");
 		if(response.length > 0){
 			operators_index.push(...response);
+			await operationControlCheck("check");
 		}else{
 			break;
 		}
@@ -81,15 +105,360 @@ async function fetchDelegators(operatorAddress, id) {
     try {
         const response = await axios.post(process.env.RPC_SOPHON, payload);
 		if (response.data.error) {
-            console.error(`Erro na API para o operador ${operatorAddress}:`, response.data.error.code, response.data.error.message, response.data.error.data);
+            console.error(`Function fetchDelegators:`, response.data.error.code, response.data.error.message, response.data.error.data);
             return null;
         }
 		
         return hexToInt(response.data.result);
     } catch (error) {
-        console.error(`Erro ao consultar a API para o operador ${operatorAddress}:`, error.message);
+        console.error(`Function fetchDelegators:`, error.message);
         return null;
     }
+}
+
+// Get logs on chain SOPHON
+async function fetchLogs(bi, bf, id) {
+    const payload = {
+        method: 'eth_getLogs',
+        params: [
+            {
+                "address": "0xd8e3a935706c08b5e6f8e05d63d3e67ce2ae330c",
+                "fromBlock": intToHex(bi),
+                "toBlock": intToHex(bf),
+                "topics": [],
+            }
+        ],
+        id: id,
+        jsonrpc: '2.0',
+    };	
+	
+
+    try {
+        const response = await axios.post(process.env.RPC_SOPHON, payload);
+		if (response.data.error) {
+            console.error(`Function fetchLogs:`, response.data.error.code, response.data.error.message, response.data.error.data);
+            return null;
+        }
+		
+        return response.data.result;
+    } catch (error) {
+        console.error(`Function fetchLogs:`, error.message);
+        return null;
+    }
+}
+
+//Get lastblock on SOPHON
+async function fetchLastBlock(id){
+	const payload = {
+        method: 'eth_blockNumber',
+        params: [],
+        id: id,
+        jsonrpc: '2.0',
+    };	
+	
+
+    try {
+        const response = await axios.post(process.env.RPC_SOPHON, payload);
+		if (response.data.error) {
+            console.error(`Function fetchLastBlock:`, response.data.error.code, response.data.error.message, response.data.error.data);
+            return null;
+        }
+		
+        return hexToInt(response.data.result);
+    } catch (error) {
+        console.error(`Function fetchLastBlock:`, error.message);
+        return null;
+    }
+}
+
+//Save System Data
+async function saveSystemData(newBlockNumber, lastBlockNumber){
+	const client = new MongoClient(mongoUri);
+	const db = client.db(dbName);
+	const systemDataSet = db.collection(collectionSystem);
+	
+	try {
+		await client.connect();
+		const existingBlockInfo = await systemDataSet.findOne({});
+		if(existingBlockInfo){
+			await systemDataSet.updateOne(
+                    { lastBlockNumber: existingBlockInfo.lastBlockNumber },
+                    { $set: { lastBlockNumber: newBlockNumber, previousBlock: existingBlockInfo.lastBlockNumber, lastUpdate: Math.floor(Date.now() / 1000)} }
+                );
+		}else{
+			await systemDataSet.insertOne({
+				lastBlockNumber: newBlockNumber,
+				previousBlock: lastBlockNumber,
+				lastUpdate: Math.floor(Date.now() / 1000),
+			});
+		}		
+	} catch (error) {
+        console.error('Function saveSystemData Error connecting or operating on MongoDB:', error.message);
+		return false;
+    } finally { 
+        await client.close();
+		return true;
+    }	
+}
+
+function getEventType(topic){
+	if(topic == '0xd9a687098552b070e1e304af176b8a589970267356590b7c7386c2f4fb7d0cc8'){
+		return "DELEGATE";			
+	}else if(topic == '0x94784069b8ffa11f7392979bd35691ef746b2c02f3709f7112aae7e2b2f41f23'){
+		return "UNDELEGATE";
+	}else if(topic == '0x5e0927d844acaf1b5b3d6fc60c141645a4021a24d501dba971836d488277e084'){
+		return "MINT";
+		
+	}else{
+		return "Null";
+	}
+}
+
+async function saveOnSyncMode(dataSet, log){
+	try {
+		if(log.topics.length != 3){
+			console.log(`Ignoring... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)} Already existing.`);
+			return true;
+		}		
+		let typeEvent = getEventType(log.topics[0]);
+		let guardian_ = toEthereumAddress(log.topics[1]);
+		let operator_ = toEthereumAddress(log.topics[2]);
+		
+		if(typeEvent == "Null"){
+			console.log(`Ignoring... ${log.topics[0]}`);
+			return true;
+		}else if(typeEvent == "MINT"){
+			operator_ = 'Null';
+		}
+		
+		const result = await dataSet.updateOne(
+			{ blockNumber: hexToInt(log.blockNumber), txIndex: hexToInt(log.transactionIndex), txLogIndex: hexToInt(log.transactionLogIndex), eventType: typeEvent },
+			{
+				$set: { 
+					txHash: log.transactionHash,
+					blockHash: log.blockHash,
+					blockTimestamp: hexToInt(log.blockTimestamp), 
+					blockData: hexToInt(log.data), 
+					logIndex: log.logIndex,
+					guardian: guardian_,
+					operator: operator_ 
+				}
+			},
+			{ upsert: true }
+		);
+
+		if (result.upsertedCount > 0) {			
+			updateOperations.newRecord++;
+			console.log(`NEW! Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)}`);
+		} else if (result.modifiedCount > 0) {			
+			updateOperations.updateRecord++;
+			console.log(`Updated... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)} Already existing.`);
+		} else if(result.matchedCount >= 1 && result.acknowledged) {			
+			updateOperations.recordIgnored++;			
+			console.log(`Ignoring... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)} Equal values.`);
+		} else {			
+			updateOperations.noAction++;			
+			console.log(`Not action... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)}`);
+		}
+	} catch (error) {
+        console.error('Function saveOnSyncMode Error connecting or operating on MongoDB:', error.message);
+		updateOperations.recordErrors++;
+    }
+	return true;
+}
+
+//Save Logs Function
+async function saveChainLogs(log){
+	await operationControlCheck("increment");
+	const client = new MongoClient(mongoUri);
+	const db = client.db(dbName);
+	const logsDataSet = db.collection(collectionLogs);
+	
+	try {
+		await client.connect();
+		if(log.topics.length != 3){
+			console.log(`Ignoring... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)} Already existing.`);
+			await client.close();
+			return true;
+		}		
+		let typeEvent = getEventType(log.topics[0]);
+		let guardian_ = toEthereumAddress(log.topics[1]);
+		let operator_ = toEthereumAddress(log.topics[2]);
+		
+		if(typeEvent == "Null"){
+			console.log(`Ignoring... ${log.topics[0]}`);
+			await client.close();
+			return true;
+		}else if(typeEvent == "MINT"){
+			operator_ = 'Null';
+		}
+		
+		await operationControlCheck("increment");
+		/*let existingLog = await logsDataSet.findOne({ blockNumber: hexToInt(log.blockNumber), txIndex: hexToInt(log.transactionIndex), txLogIndex: hexToInt(log.transactionLogIndex), eventType: typeEvent });*/
+		
+		const result = await logsDataSet.updateOne(
+			{ blockNumber: hexToInt(log.blockNumber), txIndex: hexToInt(log.transactionIndex), txLogIndex: hexToInt(log.transactionLogIndex), eventType: typeEvent },
+			{
+				$set: { 
+					txHash: log.transactionHash,
+					blockHash: log.blockHash,
+					blockTimestamp: hexToInt(log.blockTimestamp), 
+					blockData: hexToInt(log.data), 
+					logIndex: log.logIndex,
+					guardian: guardian_,
+					operator: operator_ 
+				}
+			},
+			{ upsert: true }
+		);
+
+		if (result.upsertedCount > 0) {			
+			updateOperations.newRecord++;
+			console.log(`NEW! Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)}`);
+		} else if (result.modifiedCount > 0) {			
+			updateOperations.updateRecord++;
+			console.log(`Updated... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)} Already existing.`);
+		} else if(result.matchedCount >= 1 && result.acknowledged) {			
+			updateOperations.recordIgnored++;			
+			console.log(`Ignoring... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)} Equal values.`);
+		} else {			
+			updateOperations.noAction++;			
+			console.log(`Not action... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)}`);
+		}
+	} catch (error) {		
+		updateOperations.recordErrors++;
+        console.error('Function saveChainLogs Error connecting or operating on MongoDB:', error.message);
+		return false;
+    } finally { 
+        await client.close();
+		return true;
+    }	
+}
+
+//First cache routine.
+async function getLogs(lastBlockNumber){
+	await operationControlCheck("init");
+	await operationControlCheck("increment");
+	const lastBlock = await fetchLastBlock(1);
+	let unit = process.env.LIMIT_OF_BLOCKS;
+	let steps = 1;
+	let logs = [];
+	
+	updateOperations.newRecord = 0;
+	updateOperations.updateRecord = 0;
+	updateOperations.recordIgnored = 0;
+	updateOperations.noAction = 0;
+	updateOperations.recordErrors = 0;
+	
+	if (lastBlock === null){
+		console.error(`getLogs: Error during execution fetchLastBlock, terminated. `);
+		return ;
+	}
+	
+	let logsPromises = [];
+	
+	if(lastBlockNumber == 0){
+		unit = process.env.LIMIT_OF_BLOCKS_SYNC;
+		await operationControlCheck("increment");
+		const client = new MongoClient(mongoUri);
+		const db = client.db(dbName);
+		const logsDataSet = db.collection(collectionLogs);
+		try {
+			await client.connect();
+			steps = Math.ceil(lastBlock / unit);
+			for(i=0;i<=steps;i++){		
+				let first_ = i * unit + 1;
+				let toBlock = first_ + unit - 1;
+				await operationControlCheck("increment");
+				logs = await fetchLogs(first_,toBlock,i);
+				
+				if (logs === null){
+					console.error(`getLogs: Error during execution fetchLogs, loop terminated. `);
+					return ;
+				}
+				
+				for(j=0;j<logs.length;j++){
+					console.log(`Block ${hexToInt(logs[j].blockNumber)} of ${toBlock} | Total: ${lastBlock}`);
+					await operationControlCheck("increment");
+					logsPromises.push(saveOnSyncMode(logsDataSet, logs[j]));
+					/*
+					let saveChainLogsInfo = await saveChainLogs(logs[j]);
+					*/
+					await operationControlCheck("check");
+					
+					/*
+					if(!saveChainLogsInfo){
+						console.error(`getLogs: Error during execution saveChainLogsInfo, loop terminated. `);
+						return ;
+					}*/				
+				}
+			}
+			await Promise.all(logsPromises);
+		} catch (error) {
+			console.error('Function getLogs Error connecting or operating on MongoDB:', error.message);
+			return ;
+		} finally {
+			await client.close();
+		}
+	}else if((lastBlock - lastBlockNumber) <= unit && lastBlockNumber < lastBlock){
+		await operationControlCheck("increment");	
+		logs = await fetchLogs(lastBlockNumber+1,lastBlock,1);
+		
+		if (logs === null){
+			console.error(`getLogs: Error during execution fetchLogs, loop terminated. `);
+			return ;
+		}
+		
+		for(j=0;j<logs.length;j++){
+			console.log(`Block ${hexToInt(logs[j].blockNumber)} of ${lastBlock} | Total: ${lastBlock}`);
+			let saveChainLogsInfo = await saveChainLogs(logs[j]);
+			await operationControlCheck("check");
+			
+			if(!saveChainLogsInfo){
+				console.error(`getLogs: Error during execution saveChainLogsInfo, loop terminated. `);
+				return ;
+			}			
+		}			
+	}else{
+		//Unforeseen hypothesis, solve logic here
+		steps = Math.ceil((lastBlock - lastBlockNumber) / unit);
+		for(i=0;i<=steps;i++){		
+			let first_ = i * unit + lastBlockNumber + 1;
+			let toBlock = first_ + unit - 1;
+			
+			await operationControlCheck("increment");
+			console.log(`first_: ${first_} | toBlock: ${toBlock}`);
+			logs = await fetchLogs(first_,toBlock,i);
+			
+			if (logs === null){
+				console.error(`getLogs: Error during execution fetchLogs, loop terminated. `);
+				return ;
+			}
+			
+			for(j=0;j<logs.length;j++){
+				console.log(`Block ${hexToInt(logs[j].blockNumber)} of ${toBlock} | Total: ${lastBlock}`);
+				let saveChainLogsInfo = await saveChainLogs(logs[j]);
+				await operationControlCheck("check");
+				
+				if(!saveChainLogsInfo){
+					console.error(`getLogs: Error during execution saveChainLogsInfo, loop terminated. `);
+					return ;
+				}				
+			}
+		}
+	}
+	
+	console.log(`${updateOperations.updateRecord} Updated, ${updateOperations.newRecord} New Inserteds, ${updateOperations.recordIgnored} Ignored, ${updateOperations.noAction} No Action And ${updateOperations.recordErrors} Errors.`);
+	
+	await operationControlCheck("increment");
+	let saveSystemInfo = await saveSystemData(lastBlock, lastBlockNumber);
+	if(saveSystemInfo){
+		console.log(`SYSTEM: Updated to height ${lastBlock}, previous block ${lastBlockNumber}`);
+	}else{
+		console.error(`SYSTEM: Not Updated to height ${lastBlock}, previous block ${lastBlockNumber}, function stoped!`);
+	}
+	await operationControlCheck("finally");
+	return ;
 }
 
 // Function to add a delay
@@ -97,111 +466,210 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Main function to update or insert data in MongoDB
+async function updateOperatorStatus(dataSet, operator){
+	try{
+		const result = await dataSet.updateOne(
+			{ operatorAddress: operator.operator },
+			{
+				$set: { 
+					nodeStatus: operator.status, 
+					nodeRewards: operator.rewards, 
+					nodeFee: operator.fee, 
+					nodeUptime: operator.uptime,
+				},
+				$setOnInsert: {
+					nodesDelegated: 0,
+				}
+			},
+			{ upsert: true }
+		);
+		
+		if (result.upsertedCount > 0) {
+			updateOperations.newRecord++;
+			console.log(`New operator inserted ${operator.operator}`);
+		} else if (result.modifiedCount > 0) {
+			updateOperations.updateRecord++;
+			console.log(`Updated operator ${operator.operator}`);
+		} else if(result.matchedCount >= 1 && result.acknowledged) {
+			updateOperations.recordIgnored++;
+			console.log(`Operator ignored ${operator.operator}`);
+		} else {
+			updateOperations.noAction++;
+			console.log(`Not Action ${operator.operator}`);
+		}
+	} catch (error) {
+		console.error('Error connecting or operating on MongoDB:', error.message);
+	}
+	return true;
+}
+
 async function updateOperators() {
+	await operationControlCheck("init");
     const client = new MongoClient(mongoUri);
-	let upCounter = 0;
-	let newCounter = 0;
-	let skipedCounter = 0;
-	let delegators_temp = [];
+	
+	updateOperations.newRecord = 0;
+	updateOperations.updateRecord = 0;
+	updateOperations.recordIgnored = 0;
+	updateOperations.noAction = 0;
+	updateOperations.recordErrors = 0;
 
     try {
-	await operationControlCheck("init");
         await client.connect();
         console.log('Connected to MongoDB');
 
         const db = client.db(dbName);
-        const collection = db.collection(collectionName);
+        const collection = db.collection(collectionOperators);
+		
+		let updates = [];
 
         let idCounter = 0;
 		await operationControlCheck("increment");
 		OPERATORS = await paginateOperators(1,999);
+		
+		if (OPERATORS === null){
+			console.error(`updateOperators: Error during execution paginateOperators, terminated. `);
+			return ;
+		}
+		
 		let total = OPERATORS.length;
 		
 		console.log(`${OPERATORS.length} Operators known`);
 
         for (const operator of OPERATORS) {
             // Database query
-		await operationControlCheck("increment");
-            const existingOperator = await collection.findOne({ operatorAddress: operator.operator });
-			
-			let operators_obj = {};
-
-            // API Query
-		await operationControlCheck("increment");
-            const delegators = await fetchDelegators(operator.operator, idCounter++);
-            if (delegators === null){
-				console.log(`${idCounter}/${total} - RPC returns null for the operator: ${operator.operator}`);
-				continue;
-			} 
-
-            if (existingOperator && (existingOperator.nodeStatus != operator.status || existingOperator.nodeRewards != operator.rewards || existingOperator.nodeFee != operator.fee || existingOperator.nodeUptime != operator.uptime || existingOperator.nodesDelegated != delegators)) {
-                // Update existing document
-		    await operationControlCheck("increment");
-                await collection.updateOne(
-                    { operatorAddress: operator.operator },
-                    { $set: { nodesDelegated: delegators, nodeStatus: operator.status, nodeRewards: operator.rewards, nodeFee: operator.fee, nodeUptime: operator.uptime } }
-                );
-				upCounter++;
-                console.log(`${idCounter}/${total} - Updated operator ${operator.operator} with ${delegators} delegators.`);
-            } else if (!existingOperator) {
-                // Inserts a new document
-		    await operationControlCheck("increment");
-                await collection.insertOne({
-                    operatorAddress: operator.operator,
-					nodesDelegated: delegators, 
-					nodeStatus: operator.status, 
-					nodeRewards: operator.rewards, 
-					nodeFee: operator.fee, 
-					nodeUptime: operator.uptime,
-                });
-				newCounter++;
-                console.log(`${idCounter}/${total} - New operator inserted ${operator.operator} with ${delegators} delegators.`);
-            }else{
-				skipedCounter++;
-				console.log(`${idCounter}/${total} - Operator ignored ${operator.operator} with ${delegators} delegators.`);
-			}
-
-            // delay between interactions
-		await operationControlCheck("check");
-            //await sleep(200);
+			await operationControlCheck("increment");
+			updates.push(updateOperatorStatus(collection, operator));
+            await operationControlCheck("check");
         }
+		await Promise.all(updates);
     } catch (error) {
         console.error('Error connecting or operating on MongoDB:', error.message);
     } finally {
-		console.log(`${upCounter} Updated, ${newCounter} New Inserteds and ${skipedCounter} Ignored`);
-	    	await operationControlCheck("finally");
-		getAllOperators();
-		setTimeout(updateOperators, process.env.REFRESH_INTERVAL * 1000); 
-        await client.close();
+		console.log(`${updateOperations.updateRecord} Updated, ${updateOperations.newRecord} New Inserteds, ${updateOperations.recordIgnored} Ignored And ${updateOperations.noAction} No Action.`);
+		await client.close();
+		await operationControlCheck("finally");
     }
+	return ;
+}
+
+async function intBlockData(blockDataLog){
+	let delegatorsCount = 0;
+	for (const log of blockDataLog) {
+		if(log.eventType == "DELEGATE"){
+			delegatorsCount += log.blockData;
+		}else if(log.eventType == "UNDELEGATE"){
+			delegatorsCount -= log.blockData;
+		}
+	}
+	return delegatorsCount;
+}
+
+async function syncOperatorsTable(operatorsDataSet, operator_, delegator_count){	
+	try {
+		await operatorsDataSet.updateOne(
+			{ operatorAddress: operator_ },
+			{
+				$set: { nodesDelegated: delegator_count },
+				$setOnInsert: {
+					nodeStatus: true,
+					nodeRewards: "0",
+					nodeFee: 1,
+					nodeUptime: 100
+				}
+			},
+			{ upsert: true }
+		);
+	} catch (error) {
+		console.error('Function syncOperators Error connecting or operating on MongoDB:', error.message);
+	}
+	return true;
 }
 
 async function getAllOperators() {
+	await operationControlCheck("init");
 	console.log(`Bringing existing delegate records by operator.`);
     const client = new MongoClient(mongoUri);
+	
+	updateOperations.newRecord = 0;
+	updateOperations.updateRecord = 0;
+	updateOperations.recordIgnored = 0;
+	updateOperations.noAction = 0;
+	updateOperations.recordErrors = 0;
+	
+	let updates = [];
+	let nodes_temp = [];
 
     try {
         await client.connect();
         console.log('Connected to MongoDB');
 
         const db = client.db(dbName);
-        const collection = db.collection(collectionName);
-        const operators_ = await collection.find({}, { projection: { _id: 0 } }).toArray();		
+        const operatorsDataSet = db.collection(collectionOperators);
+		await operationControlCheck("increment");
+		const operators_ = await operatorsDataSet.aggregate([
+		{
+			$lookup: {
+				from: collectionLogs,
+				localField: "operatorAddress",
+				foreignField: "operator",
+				as: "blockData"
+			}
+		},
+		{
+        $project: {
+			_id: 0,
+			operatorAddress: 1,
+            nodesDelegated: 1,
+            nodeStatus: 1,
+            nodeRewards: 1,
+            nodeFee: 1,
+            nodeUptime: 1,
+			"blockData.txHash": 1,
+			"blockData.blockTimestamp": 1,
+			"blockData.blockData": 1,
+			"blockData.eventType": 1,
+			"blockData.guardian": 1
+			}
+		}
+		]).toArray();
 		
+		let idCounter = 0;
+		let total = operators_.length;
+		
+		for (let operator of operators_) {
+			let delegatorsCount = await intBlockData(operator.blockData);			
+			if(delegatorsCount != operator.nodesDelegated){
+				await operationControlCheck("increment");
+				updates.push(syncOperatorsTable(operatorsDataSet, operator.operatorAddress, delegatorsCount));
+				idCounter++;
+				updateOperations.updateRecord++;
+				operator.nodesDelegated = delegatorsCount;
+				console.log(`${idCounter}/${total} - Operator updated ${operator.operatorAddress}`);
+			}else{
+				idCounter++;
+				updateOperations.recordIgnored++;
+				console.log(`${idCounter}/${total} - Operator ignored ${operator.operatorAddress}`);
+			}
+			nodes_temp.push(operator);			
+		}
+		
+		await Promise.all(updates);
 		
 		GLOBAL_DELEGATORS = [];
-        GLOBAL_DELEGATORS = {"nodes": operators_, lastupdate: Math.floor(Date.now() / 1000)};		
+        GLOBAL_DELEGATORS = {"nodes": nodes_temp, lastupdate: Math.floor(Date.now() / 1000)};		
 
-        console.log('GLOBAL_DELEGATORS Updated!');
-		
-        return GLOBAL_DELEGATORS;
+        console.log('GLOBAL_DELEGATORS Updated!');		
+        
     } catch (error) {
         console.error('Error connecting or operating on MongoDB:', error.message);
         return {};
     } finally {
-        await client.close();
+		await client.close();
+		console.log(`${updateOperations.updateRecord} Updated, ${updateOperations.recordIgnored} Ignored And ${updateOperations.noAction} No Action.`);
+		await operationControlCheck("finally");
     }
+	
+	return GLOBAL_DELEGATORS;
 }
 
 async function operationControlCheck(cases){
@@ -243,6 +711,42 @@ async function operationControlCheck(cases){
 	return ;
 }
 
+async function launchFunctions(syncLogs = false){
+	const client = new MongoClient(mongoUri);
+	const db = client.db(dbName);
+	const systemDataSet = db.collection(collectionSystem);
+	
+	try {
+		if(!syncLogs){
+			await client.connect();
+			const existingBlockInfo = await systemDataSet.findOne({});
+			if(existingBlockInfo){		
+				await updateOperators();
+				console.log(`Last existing block information found. ${existingBlockInfo.lastBlockNumber}`);
+				await getLogs(existingBlockInfo.lastBlockNumber);
+				await getAllOperators();
+			}else{
+				console.log(`Last existing block information not found. Zero's log sync mode.`);
+				await updateOperators();
+				await getLogs(0);
+				await getAllOperators();
+			}	
+		}else{
+			console.log(`Zero's log sync mode.`);
+			await updateOperators();
+			await getLogs(0);
+			await getAllOperators();
+		}
+	} catch (error) {
+        console.error('Function launchFunctions Error connecting or operating on MongoDB:', error.message);
+		return false;
+    } finally { 
+        await client.close();
+		setTimeout(launchFunctions, process.env.REFRESH_INTERVAL * 1000);
+		return true;
+    }	
+}
+
 // Route to get list of operators
 app.get('/operators', async (req, res) => {
     try {
@@ -257,5 +761,4 @@ app.listen(port, () => {
     console.log(`Server running on http://localhost:${port}`);
 });
 
-setTimeout(updateOperators, 5000);
-getAllOperators();
+launchFunctions();
