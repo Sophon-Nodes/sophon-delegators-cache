@@ -13,6 +13,8 @@ const collectionOperators = process.env.COLLECTION_OPERATORS;
 const collectionLogs = process.env.COLLECTION_LOGS;
 const collectionSystem = process.env.COLLECTION_SYSTEM;
 
+const DEBUG_MODE = process.env.DEBUG;
+
 //For operations per second control, MongoDB Atlas plan limitation.
 let operations = {start: 0, currentOp: 0, during:{start:0,end:0}, limit: 80};
 
@@ -217,7 +219,8 @@ function getEventType(topic){
 async function saveOnSyncMode(dataSet, log){
 	try {
 		if(log.topics.length != 3){
-			console.log(`Ignoring... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)} Already existing.`);
+			if(DEBUG_MODE)
+				console.log(`Ignoring... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)} Already existing.`);
 			return true;
 		}		
 		let typeEvent = getEventType(log.topics[0]);
@@ -225,7 +228,8 @@ async function saveOnSyncMode(dataSet, log){
 		let operator_ = toEthereumAddress(log.topics[2]);
 		
 		if(typeEvent == "Null"){
-			console.log(`Ignoring... ${log.topics[0]}`);
+			if(DEBUG_MODE)
+				console.log(`Ignoring... ${log.topics[0]}`);
 			return true;
 		}else if(typeEvent == "MINT"){
 			operator_ = 'Null';
@@ -249,16 +253,20 @@ async function saveOnSyncMode(dataSet, log){
 
 		if (result.upsertedCount > 0) {			
 			updateOperations.newRecord++;
-			console.log(`NEW! Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)}`);
+			if(DEBUG_MODE)
+				console.log(`NEW! Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)}`);
 		} else if (result.modifiedCount > 0) {			
 			updateOperations.updateRecord++;
-			console.log(`Updated... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)} Already existing.`);
+			if(DEBUG_MODE)
+				console.log(`Updated... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)} Already existing.`);
 		} else if(result.matchedCount >= 1 && result.acknowledged) {			
-			updateOperations.recordIgnored++;			
-			console.log(`Ignoring... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)} Equal values.`);
+			updateOperations.recordIgnored++;
+			if(DEBUG_MODE)
+				console.log(`Ignoring... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)} Equal values.`);
 		} else {			
-			updateOperations.noAction++;			
-			console.log(`Not action... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)}`);
+			updateOperations.noAction++;
+			if(DEBUG_MODE)
+				console.log(`Not action... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)}`);
 		}
 	} catch (error) {
         console.error('Function saveOnSyncMode Error connecting or operating on MongoDB:', error.message);
@@ -277,7 +285,8 @@ async function saveChainLogs(log){
 	try {
 		await client.connect();
 		if(log.topics.length != 3){
-			console.log(`Ignoring... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)} Already existing.`);
+			if(DEBUG_MODE)
+				console.log(`Ignoring... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)} Already existing.`);
 			await client.close();
 			return true;
 		}		
@@ -286,7 +295,8 @@ async function saveChainLogs(log){
 		let operator_ = toEthereumAddress(log.topics[2]);
 		
 		if(typeEvent == "Null"){
-			console.log(`Ignoring... ${log.topics[0]}`);
+			if(DEBUG_MODE)
+				console.log(`Ignoring... ${log.topics[0]}`);
 			await client.close();
 			return true;
 		}else if(typeEvent == "MINT"){
@@ -314,16 +324,20 @@ async function saveChainLogs(log){
 
 		if (result.upsertedCount > 0) {			
 			updateOperations.newRecord++;
-			console.log(`NEW! Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)}`);
+			if(DEBUG_MODE)
+				console.log(`NEW! Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)}`);
 		} else if (result.modifiedCount > 0) {			
 			updateOperations.updateRecord++;
-			console.log(`Updated... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)} Already existing.`);
+			if(DEBUG_MODE)
+				console.log(`Updated... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)} Already existing.`);
 		} else if(result.matchedCount >= 1 && result.acknowledged) {			
-			updateOperations.recordIgnored++;			
-			console.log(`Ignoring... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)} Equal values.`);
+			updateOperations.recordIgnored++;
+			if(DEBUG_MODE)
+				console.log(`Ignoring... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)} Equal values.`);
 		} else {			
-			updateOperations.noAction++;			
-			console.log(`Not action... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)}`);
+			updateOperations.noAction++;
+			if(DEBUG_MODE)
+				console.log(`Not action... Transaction ${log.transactionHash} of ${hexToInt(log.blockNumber)}`);
 		}
 	} catch (error) {		
 		updateOperations.recordErrors++;
@@ -381,16 +395,7 @@ async function getLogs(lastBlockNumber){
 					console.log(`Block ${hexToInt(logs[j].blockNumber)} of ${toBlock} | Total: ${lastBlock}`);
 					await operationControlCheck("increment");
 					logsPromises.push(saveOnSyncMode(logsDataSet, logs[j]));
-					/*
-					let saveChainLogsInfo = await saveChainLogs(logs[j]);
-					*/
-					await operationControlCheck("check");
-					
-					/*
-					if(!saveChainLogsInfo){
-						console.error(`getLogs: Error during execution saveChainLogsInfo, loop terminated. `);
-						return ;
-					}*/				
+					await operationControlCheck("check");			
 				}
 			}
 			await Promise.all(logsPromises);
@@ -486,16 +491,20 @@ async function updateOperatorStatus(dataSet, operator){
 		
 		if (result.upsertedCount > 0) {
 			updateOperations.newRecord++;
-			console.log(`New operator inserted ${operator.operator}`);
+			if(DEBUG_MODE)
+				console.log(`New operator inserted ${operator.operator}`);
 		} else if (result.modifiedCount > 0) {
 			updateOperations.updateRecord++;
-			console.log(`Updated operator ${operator.operator}`);
+			if(DEBUG_MODE)
+				console.log(`Updated operator ${operator.operator}`);
 		} else if(result.matchedCount >= 1 && result.acknowledged) {
 			updateOperations.recordIgnored++;
-			console.log(`Operator ignored ${operator.operator}`);
+			if(DEBUG_MODE)
+				console.log(`Operator ignored ${operator.operator}`);
 		} else {
 			updateOperations.noAction++;
-			console.log(`Not Action ${operator.operator}`);
+			if(DEBUG_MODE)
+				console.log(`Not Action ${operator.operator}`);
 		}
 	} catch (error) {
 		console.error('Error connecting or operating on MongoDB:', error.message);
@@ -644,11 +653,13 @@ async function getAllOperators() {
 				idCounter++;
 				updateOperations.updateRecord++;
 				operator.nodesDelegated = delegatorsCount;
-				console.log(`${idCounter}/${total} - Operator updated ${operator.operatorAddress}`);
+				if(DEBUG_MODE)
+					console.log(`${idCounter}/${total} - Operator updated ${operator.operatorAddress}`);
 			}else{
 				idCounter++;
 				updateOperations.recordIgnored++;
-				console.log(`${idCounter}/${total} - Operator ignored ${operator.operatorAddress}`);
+				if(DEBUG_MODE)
+					console.log(`${idCounter}/${total} - Operator ignored ${operator.operatorAddress}`);
 			}
 			nodes_temp.push(operator);			
 		}
@@ -683,7 +694,8 @@ async function operationControlCheck(cases){
 		case "increment":
 			operations.currentOp++;			
 			if((timeNow - operations.start) <= 1 && operations.currentOp >= operations.limit){
-				console.log("Sleeping...");
+				if(DEBUG_MODE)
+					console.log("Sleeping...");
 				operations.currentOp = 0;
 				await sleep(1000);
 				operations.start = Math.floor(Date.now() / 1000);
@@ -694,7 +706,8 @@ async function operationControlCheck(cases){
 		break;
 		case "check":			
 			if((timeNow - operations.start) <= 1 && operations.currentOp >= operations.limit){
-				console.log("Sleeping...");
+				if(DEBUG_MODE)
+					console.log("Sleeping...");
 				operations.currentOp = 0;
 				await sleep(1000);
 				operations.start = Math.floor(Date.now() / 1000);
