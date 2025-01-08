@@ -13,7 +13,7 @@ const collectionOperators = process.env.COLLECTION_OPERATORS;
 const collectionLogs = process.env.COLLECTION_LOGS;
 const collectionSystem = process.env.COLLECTION_SYSTEM;
 
-const DEBUG_MODE = process.env.DEBUG;
+const DEBUG_MODE = false;
 
 //For operations per second control, MongoDB Atlas plan limitation.
 let operations = {start: 0, currentOp: 0, during:{start:0,end:0}, limit: 80};
