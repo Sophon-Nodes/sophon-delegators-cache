@@ -644,6 +644,9 @@ async function getAllOperators() {
 		
 		let idCounter = 0;
 		let total = operators_.length;
+		let activeNodes = 0;
+		let averageUptime = 0;
+		let averageFee = 0;
 		
 		for (let operator of operators_) {
 			let delegatorsCount = await intBlockData(operator.blockData);			
@@ -661,13 +664,31 @@ async function getAllOperators() {
 				if(DEBUG_MODE)
 					console.log(`${idCounter}/${total} - Operator ignored ${operator.operatorAddress}`);
 			}
+				
+			if (operator.nodeStatus) {
+				activeNodes++;
+			}
+			averageUptime += operator.nodeUptime;
+			averageFee += operator.nodeFee;
 			nodes_temp.push(operator);			
 		}
 		
 		await Promise.all(updates);
+
+		averageUptime = averageUptime / total;
+		averageFee = averageFee / total;
 		
 		GLOBAL_DELEGATORS = [];
-        GLOBAL_DELEGATORS = {"nodes": nodes_temp, lastupdate: Math.floor(Date.now() / 1000)};		
+        GLOBAL_DELEGATORS = {
+			"nodes": nodes_temp, 
+			totals: {
+				totalNodes: total,
+				activeNodes: activeNodes,
+				averageUptime: averageUptime,
+				averageFee: averageFee
+			},
+			lastupdate: Math.floor(Date.now() / 1000)
+		};		
 
         console.log('GLOBAL_DELEGATORS Updated!');		
         
@@ -760,6 +781,14 @@ async function launchFunctions(syncLogs = false){
     }	
 }
 
+async function paginateResponse(array, page_size, page_number) {
+	const start = (page_number - 1) * page_size;
+    const end = start + page_size;
+
+    // Retorna a fatia do array que representa a página
+    return array.slice(start, end);
+}
+
 // Route to get list of operators
 app.get('/operators', async (req, res) => {
     try {
@@ -767,6 +796,38 @@ app.get('/operators', async (req, res) => {
     } catch (error) {
         res.status(500).json({ error: 'Error getting operators...' });
     }
+});
+
+// Route to get list of operators by pagination.
+app.get('/nodes', async (req, res) => {
+	let p_ = 1;
+	let l_ = 27;
+	if (parseInt(req.query.page) > 0) {
+		p_ = parseInt(req.query.page);
+	}
+	if (parseInt(req.query.limit) > 0) {
+		l_ = parseInt(req.query.limit);
+	}
+	const page = p_;
+    const limit = l_;
+	const totalPages = Math.ceil(GLOBAL_DELEGATORS.nodes.length / limit);	
+
+	let paginate_result = await paginateResponse(GLOBAL_DELEGATORS.nodes, limit, page);
+
+	response = {
+		"nodes": [], 
+		totals: GLOBAL_DELEGATORS.totals,
+		navInfo: {
+			currentPage: p_,
+			totalElements: paginate_result.length,
+			totalPages: totalPages
+		}, 
+		lastupdate: GLOBAL_DELEGATORS.lastupdate
+	};
+
+	response.nodes = paginate_result;
+
+	res.json(response);
 });
 
 // Start the server
