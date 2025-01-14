@@ -800,34 +800,38 @@ app.get('/operators', async (req, res) => {
 
 // Route to get list of operators by pagination.
 app.get('/nodes', async (req, res) => {
-	let p_ = 1;
-	let l_ = 27;
-	if (parseInt(req.query.page) > 0) {
-		p_ = parseInt(req.query.page);
+	try {
+		let p_ = 1;
+		let l_ = 27;
+		if (parseInt(req.query.page) > 0) {
+			p_ = parseInt(req.query.page);
+		}
+		if (parseInt(req.query.limit) > 0) {
+			l_ = parseInt(req.query.limit);
+		}
+		const page = p_;
+		const limit = l_;
+		const totalPages = Math.ceil(GLOBAL_DELEGATORS.nodes.length / limit);	
+
+		let paginate_result = await paginateResponse(GLOBAL_DELEGATORS.nodes, limit, page);
+
+		response = {
+			"nodes": [], 
+			totals: GLOBAL_DELEGATORS.totals,
+			navInfo: {
+				currentPage: p_,
+				totalElements: paginate_result.length,
+				totalPages: totalPages
+			}, 
+			lastupdate: GLOBAL_DELEGATORS.lastupdate
+		};
+
+		response.nodes = paginate_result;
+
+		res.json(response);
+	} catch (error) {
+		res.status(500).json({ error: 'Error getting operators...' });
 	}
-	if (parseInt(req.query.limit) > 0) {
-		l_ = parseInt(req.query.limit);
-	}
-	const page = p_;
-    const limit = l_;
-	const totalPages = Math.ceil(GLOBAL_DELEGATORS.nodes.length / limit);	
-
-	let paginate_result = await paginateResponse(GLOBAL_DELEGATORS.nodes, limit, page);
-
-	response = {
-		"nodes": [], 
-		totals: GLOBAL_DELEGATORS.totals,
-		navInfo: {
-			currentPage: p_,
-			totalElements: paginate_result.length,
-			totalPages: totalPages
-		}, 
-		lastupdate: GLOBAL_DELEGATORS.lastupdate
-	};
-
-	response.nodes = paginate_result;
-
-	res.json(response);
 });
 
 // Start the server
