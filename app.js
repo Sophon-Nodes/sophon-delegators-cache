@@ -789,6 +789,46 @@ async function paginateResponse(array, page_size, page_number) {
     return array.slice(start, end);
 }
 
+async function applyFiltersAndSort(array, filters, address) {
+	try {
+		let filteredData = [...array];
+
+		// Address Filter, If there is a search by address, all filters are canceled.
+		const searchAddress = address.toLowerCase();
+		if (searchAddress !== '') {
+			filteredData = filteredData.filter(node =>
+				node.operatorAddress.toLowerCase().includes(searchAddress)
+			);
+			return filteredData;
+		}
+
+		// nodeStatus Filter
+		const statusFilter = filters.nodeStatus;
+		if (statusFilter !== "all") {
+			filteredData = filteredData.filter(node => node.nodeStatus.toString() === statusFilter);
+		}
+
+		// Order Filter and Sort criteria
+		const sortCriteria = filters.sortBy;
+		const sortOrder = filters.sortOrder;
+		filteredData.sort((a, b) => {
+			let valueA = parseFloat(a[sortCriteria]);
+			let valueB = parseFloat(b[sortCriteria]);
+
+			if (sortOrder === "asc") {
+				return valueA - valueB;
+			} else {
+				return valueB - valueA;
+			}
+		});
+
+		return filteredData;
+	} catch (error) {
+		console.error('Error on applyFiltersAndSort: '+error);
+		return [];
+	}
+}
+
 // Route to get list of operators
 app.get('/operators', async (req, res) => {
     try {
@@ -803,6 +843,7 @@ app.get('/nodes', async (req, res) => {
 	try {
 		let p_ = 1;
 		let l_ = 27;
+
 		if (parseInt(req.query.page) > 0) {
 			p_ = parseInt(req.query.page);
 		}
@@ -812,15 +853,20 @@ app.get('/nodes', async (req, res) => {
 		const page = p_;
 		const limit = l_;
 		const totalPages = Math.ceil(GLOBAL_DELEGATORS.nodes.length / limit);	
-
-		let paginate_result = await paginateResponse(GLOBAL_DELEGATORS.nodes, limit, page);
+		
+		let applyFilters = await applyFiltersAndSort(
+			GLOBAL_DELEGATORS.nodes, 
+			JSON.parse(req.query.othersFilters), 
+			req.query.search
+		);
+		let paginate_result = await paginateResponse(applyFilters, limit, page);
 
 		response = {
 			"nodes": [], 
 			totals: GLOBAL_DELEGATORS.totals,
 			navInfo: {
 				currentPage: p_,
-				totalElements: paginate_result.length,
+				totalElements: applyFilters.length,
 				totalPages: totalPages
 			}, 
 			lastupdate: GLOBAL_DELEGATORS.lastupdate
