@@ -648,7 +648,7 @@ async function getAllOperators() {
 		let averageUptime = 0;
 		let averageFee = 0;
 		
-		for (let operator of operators_) {
+		for (let operator of operators_) {			
 			let delegatorsCount = await intBlockData(operator.blockData);			
 			if(delegatorsCount != operator.nodesDelegated){
 				await operationControlCheck("increment");
@@ -789,7 +789,7 @@ async function paginateResponse(array, page_size, page_number) {
     return array.slice(start, end);
 }
 
-async function applyFiltersAndSort(array, filters, address) {
+async function applyFiltersAndSort(array, filters, address, favorites) {
 	try {
 		let filteredData = [...array];
 
@@ -799,6 +799,13 @@ async function applyFiltersAndSort(array, filters, address) {
 			filteredData = filteredData.filter(node =>
 				node.operatorAddress.toLowerCase().includes(searchAddress)
 			);
+			return filteredData;
+		}
+
+		// favorites Filter, If there is a search by favoritesNodes, all filters are canceled.
+		const isolateFavorites = favorites;
+		if(isolateFavorites.length > 0 && filters.sortBy == "favoritesNodes"){
+			filteredData = filteredData.filter(node => isolateFavorites.includes(node.operatorAddress));
 			return filteredData;
 		}
 
@@ -857,7 +864,8 @@ app.get('/nodes', async (req, res) => {
 		let applyFilters = await applyFiltersAndSort(
 			GLOBAL_DELEGATORS.nodes, 
 			JSON.parse(req.query.othersFilters), 
-			req.query.search
+			req.query.search,
+			JSON.parse(req.query.favoriteFilter)
 		);
 		let paginate_result = await paginateResponse(applyFilters, limit, page);
 
