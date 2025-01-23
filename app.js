@@ -5,6 +5,7 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const { MongoClient } = require('mongodb');
+const sgMail = require('@sendgrid/mail');
 
 // MongoDB Settings
 const mongoUri = process.env.MONGO_URI;
@@ -13,7 +14,10 @@ const collectionOperators = process.env.COLLECTION_OPERATORS;
 const collectionLogs = process.env.COLLECTION_LOGS;
 const collectionSystem = process.env.COLLECTION_SYSTEM;
 
-const DEBUG_MODE = false;
+const DEBUG_MODE = true;
+
+//SendGrid set API
+sgMail.setApiKey(process.env.SEND_GRID_API_KEY);
 
 //For operations per second control, MongoDB Atlas plan limitation.
 let operations = {start: 0, currentOp: 0, during:{start:0,end:0}, limit: 80};
@@ -59,10 +63,11 @@ function toEthereumAddress(hexString) {
 // Function to query the API
 async function fetchOperators(page, limit) {
     try {		
-		const response = await axios.get(`https://monitor.sophon.xyz/nodes?page=${i}&per_page=${limit}`);		
+		const response = await axios.get(`https://monitor.sophon.xyz/nodes?page=${page}&per_page=${limit}`);		
 		return response.data.nodes;
     } catch (error) {
-        console.error(`Erro ao consultar a API para o operador ${operatorAddress}:`, error.message);
+		sendAlertForDev(`Function fetchOperators Error querying API: ${error.message}`);
+        console.error(`Function fetchOperators Error querying API: ${error.message}`);
         return null;
     }
 }
@@ -74,6 +79,7 @@ async function paginateOperators(page, limit){
 		let response = await fetchOperators(i, limit);
 		
 		if (response === null){
+			sendAlertForDev(`paginateOperators: Error during execution fetchOperators, loop terminated. `)
 			console.error(`paginateOperators: Error during execution fetchOperators, loop terminated. `);
 			return null;
 		}
@@ -195,6 +201,7 @@ async function saveSystemData(newBlockNumber, lastBlockNumber){
 			});
 		}		
 	} catch (error) {
+		sendAlertForDev(`Function saveSystemData Error connecting or operating on MongoDB: ${error.message}`);
         console.error('Function saveSystemData Error connecting or operating on MongoDB:', error.message);
 		return false;
     } finally { 
@@ -303,8 +310,7 @@ async function saveChainLogs(log){
 			operator_ = 'Null';
 		}
 		
-		await operationControlCheck("increment");
-		/*let existingLog = await logsDataSet.findOne({ blockNumber: hexToInt(log.blockNumber), txIndex: hexToInt(log.transactionIndex), txLogIndex: hexToInt(log.transactionLogIndex), eventType: typeEvent });*/
+		await operationControlCheck("increment");		
 		
 		const result = await logsDataSet.updateOne(
 			{ blockNumber: hexToInt(log.blockNumber), txIndex: hexToInt(log.transactionIndex), txLogIndex: hexToInt(log.transactionLogIndex), eventType: typeEvent },
@@ -354,7 +360,7 @@ async function getLogs(lastBlockNumber){
 	await operationControlCheck("init");
 	await operationControlCheck("increment");
 	const lastBlock = await fetchLastBlock(1);
-	let unit = process.env.LIMIT_OF_BLOCKS;
+	let unit = parseInt(process.env.LIMIT_OF_BLOCKS);
 	let steps = 1;
 	let logs = [];
 	
@@ -372,7 +378,7 @@ async function getLogs(lastBlockNumber){
 	let logsPromises = [];
 	
 	if(lastBlockNumber == 0){
-		unit = process.env.LIMIT_OF_BLOCKS_SYNC;
+		unit = parseInt(process.env.LIMIT_OF_BLOCKS_SYNC);
 		await operationControlCheck("increment");
 		const client = new MongoClient(mongoUri);
 		const db = client.db(dbName);
@@ -400,9 +406,13 @@ async function getLogs(lastBlockNumber){
 			}
 			await Promise.all(logsPromises);
 		} catch (error) {
+			sendAlertForDev(`Function getLogs Error connecting or operating on MongoDB: ${error.message}, lastBlockNumber: ${lastBlockNumber}, newLastBlock: ${lastBlock}`);
 			console.error('Function getLogs Error connecting or operating on MongoDB:', error.message);
 			return ;
 		} finally {
+			if(updateOperations.recordErrors > 0 || updateOperations.noAction > 0){
+				sendAlertForDev(`Function getLogs Error connecting or operating on MongoDB: ${error.message}, lastBlockNumber: ${lastBlockNumber}, newLastBlock: ${lastBlock}. Finally escope.`);
+			}
 			await client.close();
 		}
 	}else if((lastBlock - lastBlockNumber) <= unit && lastBlockNumber < lastBlock){
@@ -425,43 +435,66 @@ async function getLogs(lastBlockNumber){
 			}			
 		}			
 	}else{
-		//Unforeseen hypothesis, solve logic here
-		steps = Math.ceil((lastBlock - lastBlockNumber) / unit);
-		for(i=0;i<=steps;i++){		
-			let first_ = i * unit + lastBlockNumber + 1;
-			let toBlock = first_ + unit - 1;
-			
-			await operationControlCheck("increment");
-			console.log(`first_: ${first_} | toBlock: ${toBlock}`);
-			logs = await fetchLogs(first_,toBlock,i);
-			
-			if (logs === null){
-				console.error(`getLogs: Error during execution fetchLogs, loop terminated. `);
-				return ;
-			}
-			
-			for(j=0;j<logs.length;j++){
-				console.log(`Block ${hexToInt(logs[j].blockNumber)} of ${toBlock} | Total: ${lastBlock}`);
-				let saveChainLogsInfo = await saveChainLogs(logs[j]);
-				await operationControlCheck("check");
+		//Unforeseen hypothesis, solve logic here		
+		await operationControlCheck("increment");
+		const client = new MongoClient(mongoUri);
+		const db = client.db(dbName);
+		const logsDataSet = db.collection(collectionLogs);
+		try {
+			await client.connect();
+			steps = Math.ceil((lastBlock - lastBlockNumber) / unit);
+			for(i=0;i<=steps;i++){		
+				let first_ = i * unit + lastBlockNumber + 1;
+				let toBlock = first_ + unit - 1;
 				
-				if(!saveChainLogsInfo){
-					console.error(`getLogs: Error during execution saveChainLogsInfo, loop terminated. `);
+				await operationControlCheck("increment");
+				console.log(`first_: ${first_} | toBlock: ${toBlock}`);
+				logs = await fetchLogs(first_,toBlock,i);
+				
+				if (logs === null){
+					sendAlertForDev(`getLogs: Error during execution fetchLogs, loop terminated. logs returned null.`);
+					console.error(`getLogs: Error during execution fetchLogs, loop terminated. `);
 					return ;
-				}				
+				}
+				
+				for(j=0;j<logs.length;j++){
+					console.log(`Block ${hexToInt(logs[j].blockNumber)} of ${toBlock} | Total: ${lastBlock}`);
+					await operationControlCheck("increment");
+					logsPromises.push(saveOnSyncMode(logsDataSet, logs[j]));
+					await operationControlCheck("check");				
+				}
 			}
+			await Promise.all(logsPromises);
+		} catch (error) {
+			sendAlertForDev(`Function getLogs Error connecting or operating on MongoDB: ${error.message}, lastBlockNumber: ${lastBlockNumber}, newLastBlock: ${lastBlock}`);
+			console.error('Function getLogs Error connecting or operating on MongoDB:', error.message);
+			return ;
+		} finally {
+			if(updateOperations.recordErrors > 0 || updateOperations.noAction > 0){
+				sendAlertForDev(`Function getLogs Error connecting or operating on MongoDB: ${error.message}, lastBlockNumber: ${lastBlockNumber}, newLastBlock: ${lastBlock}. Finally escope.`);
+			}
+			await client.close();
 		}
 	}
 	
-	console.log(`${updateOperations.updateRecord} Updated, ${updateOperations.newRecord} New Inserteds, ${updateOperations.recordIgnored} Ignored, ${updateOperations.noAction} No Action And ${updateOperations.recordErrors} Errors.`);
+	console.log(`${updateOperations.updateRecord} Updated, ${updateOperations.newRecord} New Inserteds, ${updateOperations.recordIgnored} Ignored, ${updateOperations.noAction} No Action And ${updateOperations.recordErrors} Errors. lastBlockNumber: ${lastBlockNumber}, newLastBlock: ${lastBlock}`);
 	
 	await operationControlCheck("increment");
-	let saveSystemInfo = await saveSystemData(lastBlock, lastBlockNumber);
-	if(saveSystemInfo){
-		console.log(`SYSTEM: Updated to height ${lastBlock}, previous block ${lastBlockNumber}`);
-	}else{
-		console.error(`SYSTEM: Not Updated to height ${lastBlock}, previous block ${lastBlockNumber}, function stoped!`);
+
+	//If there are errors when saving any log, do not update the checkpoint.
+	if(updateOperations.recordErrors == 0){
+		let saveSystemInfo = await saveSystemData(lastBlock, lastBlockNumber);
+		if(saveSystemInfo){
+			console.log(`SYSTEM: Updated to height ${lastBlock}, previous block ${lastBlockNumber}`);
+		}else{
+			console.error(`SYSTEM: Not Updated to height ${lastBlock}, previous block ${lastBlockNumber}, function stoped!`);
+		}
 	}
+
+	if(updateOperations.recordErrors > 0 || updateOperations.noAction > 0){
+		sendAlertForDev(`Function getLogs ${updateOperations.updateRecord} Updated, ${updateOperations.newRecord} New Inserteds, ${updateOperations.recordIgnored} Ignored, ${updateOperations.noAction} No Action And ${updateOperations.recordErrors} Errors. lastBlockNumber: ${lastBlockNumber}, newLastBlock: ${lastBlock}, SYSTEM did not receive an update because of this.`);
+	}
+	
 	await operationControlCheck("finally");
 	return ;
 }
@@ -507,7 +540,8 @@ async function updateOperatorStatus(dataSet, operator){
 				console.log(`Not Action ${operator.operator}`);
 		}
 	} catch (error) {
-		console.error('Error connecting or operating on MongoDB:', error.message);
+		updateOperations.recordErrors++;
+		console.error('Function updateOperatorStatus Error connecting or operating on MongoDB:', error.message);
 	}
 	return true;
 }
@@ -536,6 +570,7 @@ async function updateOperators() {
 		OPERATORS = await paginateOperators(1,999);
 		
 		if (OPERATORS === null){
+			sendAlertForDev(`updateOperators: Error during execution paginateOperators, terminated. OPERATORS Returned null`);
 			console.error(`updateOperators: Error during execution paginateOperators, terminated. `);
 			return ;
 		}
@@ -552,9 +587,13 @@ async function updateOperators() {
         }
 		await Promise.all(updates);
     } catch (error) {
-        console.error('Error connecting or operating on MongoDB:', error.message);
+		sendAlertForDev(`Function updateOperators Error connecting or operating on MongoDB: ${error.message}`);
+        console.error('Function updateOperators Error connecting or operating on MongoDB:', error.message);
     } finally {
-		console.log(`${updateOperations.updateRecord} Updated, ${updateOperations.newRecord} New Inserteds, ${updateOperations.recordIgnored} Ignored And ${updateOperations.noAction} No Action.`);
+		console.log(`${updateOperations.updateRecord} Updated, ${updateOperations.newRecord} New Inserteds, ${updateOperations.recordIgnored} Ignored, ${updateOperations.noAction} No Action AND ${updateOperations.recordErrors} Errors`);
+
+		sendAlertForDev(`Function updateOperators ${updateOperations.updateRecord} Updated, ${updateOperations.newRecord} New Inserteds, ${updateOperations.recordIgnored} Ignored, ${updateOperations.noAction} No Action AND ${updateOperations.recordErrors} Errors. Finally escope.`);
+
 		await client.close();
 		await operationControlCheck("finally");
     }
@@ -589,6 +628,7 @@ async function syncOperatorsTable(operatorsDataSet, operator_, delegator_count){
 			{ upsert: true }
 		);
 	} catch (error) {
+		updateOperations.recordErrors++;
 		console.error('Function syncOperators Error connecting or operating on MongoDB:', error.message);
 	}
 	return true;
@@ -693,11 +733,17 @@ async function getAllOperators() {
         console.log('GLOBAL_DELEGATORS Updated!');		
         
     } catch (error) {
-        console.error('Error connecting or operating on MongoDB:', error.message);
+		sendAlertForDev(`Function getAllOperators Error connecting or operating on MongoDB: ${error.message}`);
+        console.error('Function getAllOperators Error connecting or operating on MongoDB:', error.message);
         return {};
     } finally {
 		await client.close();
-		console.log(`${updateOperations.updateRecord} Updated, ${updateOperations.recordIgnored} Ignored And ${updateOperations.noAction} No Action.`);
+		console.log(`${updateOperations.updateRecord} Updated, ${updateOperations.recordIgnored} Ignored And ${updateOperations.recordErrors} Errors.`);
+
+		if(updateOperations.recordErrors > 0){
+			sendAlertForDev(`Function getAllOperators ${updateOperations.updateRecord} Updated, ${updateOperations.recordIgnored} Ignored And ${updateOperations.recordErrors} Errors. finally escope.`);
+		}
+
 		await operationControlCheck("finally");
     }
 	
@@ -834,6 +880,22 @@ async function applyFiltersAndSort(array, filters, address, favorites) {
 		console.error('Error on applyFiltersAndSort: '+error);
 		return [];
 	}
+}
+
+async function sendAlertForDev(erro){
+	const now = new Date();
+	const msg = {
+		to: process.env.DEV_EMAIL_TO,
+		from: `Sophon Nodes Alert API <${process.env.DEV_EMAIL_FROM}>`,
+		subject: 'Error Detected in Application',
+		text: `An error occurred in your application: ${erro} DATE: ${now}`,
+		html: `<strong>An error occurred in your application:</strong><br>${erro}<br>DATE: ${now}`,
+	};
+	sgMail.send(msg).then(() => {
+		console.log('Error email sent successfully.');
+	}).catch((error) => {
+		console.error('Error sending email: ', error);
+	});
 }
 
 // Route to get list of operators

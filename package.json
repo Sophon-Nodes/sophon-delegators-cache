@@ -20,11 +20,13 @@
   },
   "homepage": "https://github.com/hardx4/sophon-delegators-cache#readme",
   "dependencies": {
+    "@sendgrid/mail": "^8.1.4",
     "axios": "^1.7.9",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "log-timestamp": "^0.3.0",
-    "mongodb": "^6.12.0"
+    "mongodb": "^6.12.0",
+    "octokit": "^4.1.0"
   }
 }
