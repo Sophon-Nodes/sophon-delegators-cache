@@ -592,7 +592,8 @@ async function updateOperators() {
     } finally {
 		console.log(`${updateOperations.updateRecord} Updated, ${updateOperations.newRecord} New Inserteds, ${updateOperations.recordIgnored} Ignored, ${updateOperations.noAction} No Action AND ${updateOperations.recordErrors} Errors`);
 
-		sendAlertForDev(`Function updateOperators ${updateOperations.updateRecord} Updated, ${updateOperations.newRecord} New Inserteds, ${updateOperations.recordIgnored} Ignored, ${updateOperations.noAction} No Action AND ${updateOperations.recordErrors} Errors. Finally escope.`);
+		if(updateOperations.recordErrors > 0)
+			sendAlertForDev(`Function updateOperators ${updateOperations.updateRecord} Updated, ${updateOperations.newRecord} New Inserteds, ${updateOperations.recordIgnored} Ignored, ${updateOperations.noAction} No Action AND ${updateOperations.recordErrors} Errors. Finally escope.`);
 
 		await client.close();
 		await operationControlCheck("finally");
