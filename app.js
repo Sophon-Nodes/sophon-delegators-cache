@@ -14,7 +14,7 @@ const collectionOperators = process.env.COLLECTION_OPERATORS;
 const collectionLogs = process.env.COLLECTION_LOGS;
 const collectionSystem = process.env.COLLECTION_SYSTEM;
 
-const DEBUG_MODE = true;
+const DEBUG_MODE = false;
 
 //SendGrid set API
 sgMail.setApiKey(process.env.SEND_GRID_API_KEY);
