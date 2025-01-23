@@ -708,16 +708,16 @@ async function getAllOperators() {
 				
 			if (operator.nodeStatus) {
 				activeNodes++;
+				averageFee += operator.nodeFee;
 			}
 			averageUptime += operator.nodeUptime;
-			averageFee += operator.nodeFee;
 			nodes_temp.push(operator);			
 		}
 		
 		await Promise.all(updates);
 
 		averageUptime = averageUptime / total;
-		averageFee = averageFee / total;
+		averageFee = averageFee / activeNodes;
 		
 		GLOBAL_DELEGATORS = [];
         GLOBAL_DELEGATORS = {
@@ -792,7 +792,7 @@ async function operationControlCheck(cases){
 	return ;
 }
 
-async function launchFunctions(syncLogs = false){
+async function launchFunctions(syncLogs = false, firstStart = false){
 	const client = new MongoClient(mongoUri);
 	const db = client.db(dbName);
 	const systemDataSet = db.collection(collectionSystem);
@@ -801,24 +801,31 @@ async function launchFunctions(syncLogs = false){
 		if(!syncLogs){
 			await client.connect();
 			const existingBlockInfo = await systemDataSet.findOne({});
-			if(existingBlockInfo){		
+			if(existingBlockInfo){
+				if(firstStart)
+					await getAllOperators();
 				await updateOperators();
 				console.log(`Last existing block information found. ${existingBlockInfo.lastBlockNumber}`);
 				await getLogs(existingBlockInfo.lastBlockNumber);
 				await getAllOperators();
 			}else{
+				if(firstStart)
+					await getAllOperators();
 				console.log(`Last existing block information not found. Zero's log sync mode.`);
 				await updateOperators();
 				await getLogs(0);
 				await getAllOperators();
 			}	
 		}else{
+			if(firstStart)
+				await getAllOperators();
 			console.log(`Zero's log sync mode.`);
 			await updateOperators();
 			await getLogs(0);
 			await getAllOperators();
 		}
 	} catch (error) {
+		sendAlertForDev(`Function launchFunctions Error connecting or operating on MongoDB: ${error.message}`);
         console.error('Function launchFunctions Error connecting or operating on MongoDB:', error.message);
 		return false;
     } finally { 
@@ -956,4 +963,4 @@ app.listen(port, () => {
     console.log(`Server running on http://localhost:${port}`);
 });
 
-launchFunctions();
+launchFunctions(false, true);
