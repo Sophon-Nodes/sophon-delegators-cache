@@ -1,4 +1,5 @@
 // Import the required modules
+const fs = require('fs');
 require('dotenv').config();
 require('log-timestamp');
 const express = require('express');
@@ -13,6 +14,7 @@ const dbName = process.env.DB_NAME;
 const collectionOperators = process.env.COLLECTION_OPERATORS;
 const collectionLogs = process.env.COLLECTION_LOGS;
 const collectionSystem = process.env.COLLECTION_SYSTEM;
+const collectionEvents = process.env.COLLECTION_EVENTS;
 
 const DEBUG_MODE = false;
 
@@ -33,7 +35,26 @@ app.use(cors({ origin: process.env.DOMAIN }));
 
 // Array of operators
 let OPERATORS = [];
-let GLOBAL_DELEGATORS = [];
+let GLOBAL_DELEGATORS = {
+	nodes: [], 
+	totals: {
+		totalNodes: 0,
+		activeNodes: 0,
+		averageUptime: 0,
+		averageFee: 0
+	},
+	lastupdate: 0
+};
+let GLOBAL_DELEGATORS_TEMP = {
+	nodes: [],
+	totals: {
+		totalNode: 0,
+		activeNodes: 0,
+		averageUptime: 0,
+		averageFee: 0
+	},
+	lastupdate: 0
+};
 
 // Function to compose the "data" field of the request
 function composeData(operatorAddress) {
@@ -506,6 +527,9 @@ function sleep(ms) {
 
 async function updateOperatorStatus(dataSet, operator){
 	try{
+		//Register events of changes
+
+
 		const result = await dataSet.updateOne(
 			{ operatorAddress: operator.operator },
 			{
@@ -645,11 +669,13 @@ async function getAllOperators() {
 	updateOperations.recordIgnored = 0;
 	updateOperations.noAction = 0;
 	updateOperations.recordErrors = 0;
+
+	GLOBAL_DELEGATORS_TEMP = GLOBAL_DELEGATORS;
 	
 	let updates = [];
 	let nodes_temp = [];
 
-    try {
+    try {		
         await client.connect();
         console.log('Connected to MongoDB');
 
@@ -719,9 +745,9 @@ async function getAllOperators() {
 		averageUptime = averageUptime / total;
 		averageFee = averageFee / activeNodes;
 		
-		GLOBAL_DELEGATORS = [];
+		GLOBAL_DELEGATORS = {};
         GLOBAL_DELEGATORS = {
-			"nodes": nodes_temp, 
+			nodes: nodes_temp, 
 			totals: {
 				totalNodes: total,
 				activeNodes: activeNodes,
@@ -731,8 +757,8 @@ async function getAllOperators() {
 			lastupdate: Math.floor(Date.now() / 1000)
 		};		
 
-        console.log('GLOBAL_DELEGATORS Updated!');		
-        
+        console.log('GLOBAL_DELEGATORS Updated!');
+
     } catch (error) {
 		sendAlertForDev(`Function getAllOperators Error connecting or operating on MongoDB: ${error.message}`);
         console.error('Function getAllOperators Error connecting or operating on MongoDB:', error.message);
@@ -749,6 +775,115 @@ async function getAllOperators() {
     }
 	
 	return GLOBAL_DELEGATORS;
+}
+
+async function syncEventsTable(dataSet, data){
+	try{
+		await dataSet.insertOne(data);
+	} catch (error) {
+		updateOperations.recordErrors++;
+		console.error('Function syncEventsTable Error connecting or operating on MongoDB:', error.message);
+	}
+	return true;
+}
+
+async function registerEvents(arr1, arr2){
+	await operationControlCheck("init");
+	const client = new MongoClient(mongoUri);
+	
+	updateOperations.newRecord = 0;
+	updateOperations.recordIgnored = 0;
+	updateOperations.recordErrors = 0;
+
+	const fieldsToCheck = [ 
+		'nodeRewards', 
+		'nodeFee', 
+		'nodeUptime', 
+		'nodesDelegated'
+	];
+
+	const fieldsToCheckTotals = [
+		'totalNodes',
+		'activeNodes',
+		'averageUptime',
+		'averageFee'
+	];
+	
+	let updates = [];
+	let data = {};
+
+	try {
+		await client.connect();
+        console.log('Connected to MongoDB for registerEvents');
+
+        const db = client.db(dbName);
+        const eventsDataSet = db.collection(collectionEvents);
+		for(const newNode of arr2.nodes){
+			let existingNode = arr1.nodes.find(node => node.operatorAddress === newNode.operatorAddress);			
+
+			if(existingNode){
+				for(const field of fieldsToCheck){					
+					if (existingNode[field] !== newNode[field]) {
+						data = {
+							operatorAddress: newNode.operatorAddress, 
+							eventType: field,
+							eventValue: newNode[field],
+							timestamp: Math.floor(Date.now() / 1000),
+							createdAt: new Date().toISOString()
+						}
+						await operationControlCheck("increment");
+						updates.push(syncEventsTable(eventsDataSet, data));		
+						updateOperations.newRecord++				
+					}else{
+						updateOperations.recordIgnored++;
+					}
+				}
+			}else{
+				for(const field of fieldsToCheck){
+					data = {
+						operatorAddress: newNode.operatorAddress, 
+						eventType: field,
+						eventValue: newNode[field],
+						timestamp: Math.floor(Date.now() / 1000),
+						createdAt: new Date().toISOString()
+					}
+					await operationControlCheck("increment");
+					updates.push(syncEventsTable(eventsDataSet, data));
+					updateOperations.newRecord++;
+				}
+			}
+		}
+
+		for(const field of fieldsToCheckTotals){
+			if(arr1.totals[field] !== arr2.totals[field]){
+				data = {					
+					eventType: field,
+					eventValue: arr2.totals[field],
+					timestamp: Math.floor(Date.now() / 1000),
+					createdAt: new Date().toISOString()
+				}
+				await operationControlCheck("increment");
+				updates.push(syncEventsTable(eventsDataSet, data));
+				updateOperations.newRecord++;
+			}else{
+				updateOperations.recordIgnored++;
+			}
+		}
+
+		await Promise.all(updates);
+	} catch (error) {
+		console.error('Function registerEvents Error:', error.message);
+		sendAlertForDev(`Function registerEvents ${updateOperations.newRecord} Inserteds, ${updateOperations.recordIgnored} Ignored And ${updateOperations.recordErrors} Errors. Error: ${error.message}`);
+	} finally {
+		await client.close();
+		console.log(`${updateOperations.newRecord} Inserteds, ${updateOperations.recordIgnored} Ignored And ${updateOperations.recordErrors} Errors.`);
+
+		if(updateOperations.recordErrors > 0){
+			sendAlertForDev(`Function registerEvents ${updateOperations.newRecord} Inserteds, ${updateOperations.recordIgnored} Ignored And ${updateOperations.recordErrors} Errors. finally escope.`);
+		}
+
+		await operationControlCheck("finally");
+	}
 }
 
 async function operationControlCheck(cases){
@@ -808,6 +943,7 @@ async function launchFunctions(syncLogs = false, firstStart = false){
 				console.log(`Last existing block information found. ${existingBlockInfo.lastBlockNumber}`);
 				await getLogs(existingBlockInfo.lastBlockNumber);
 				await getAllOperators();
+				await registerEvents(GLOBAL_DELEGATORS_TEMP, GLOBAL_DELEGATORS);
 			}else{
 				if(firstStart)
 					await getAllOperators();
@@ -815,6 +951,7 @@ async function launchFunctions(syncLogs = false, firstStart = false){
 				await updateOperators();
 				await getLogs(0);
 				await getAllOperators();
+				await registerEvents(GLOBAL_DELEGATORS_TEMP, GLOBAL_DELEGATORS);
 			}	
 		}else{
 			if(firstStart)
@@ -823,6 +960,7 @@ async function launchFunctions(syncLogs = false, firstStart = false){
 			await updateOperators();
 			await getLogs(0);
 			await getAllOperators();
+			await registerEvents(GLOBAL_DELEGATORS_TEMP, GLOBAL_DELEGATORS);
 		}
 	} catch (error) {
 		sendAlertForDev(`Function launchFunctions Error connecting or operating on MongoDB: ${error.message}`);
